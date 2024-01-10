@@ -235,6 +235,6 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/python,macos,windows
 
 # Ignore Datasets, Results and Weights and Biases logs
-datasets
-results
-wandb
+datasets/
+results/
+wandb/
