@@ -10,9 +10,8 @@ import torch
 from tqdm import tqdm
 import wandb
 
-import clients
-import yset
-from .. import metrics
+from . import clients
+from ..utils import metrics
 
 
 def copy_statedict(statedict):
@@ -23,9 +22,22 @@ def copy_statedict(statedict):
     return statedict_copy
 
 
+def projection_simplex_sort(v, z=1):
+    # https://gist.github.com/mblondel/6f3b7aaad90606b98f71
+    n_features = v.shape[0]
+    u = np.sort(v)[::-1]
+    cssv = np.cumsum(u) - z
+    ind = np.arange(n_features) + 1
+    cond = u - cssv / ind > 0
+    rho = ind[cond][-1]
+    theta = cssv[cond][-1] / float(rho)
+    w = np.maximum(v - theta, 0)
+    return w
+
+
 # Server Class
 class Server:
-    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, mu=1.0, NY=100, lambda_=1, datasetname='None', runname=''):
+    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', gammatau=0.01):
         '''
         Initializes the Server object for federated learning experiment.
 
@@ -40,15 +52,16 @@ class Server:
             client_epochs (int, optional): The number of epochs each client does per communication round. Default is 10.
         '''
         self.m = len(client_datasets) if m is None else m
+        if m is not None:
+            raise NotImplementedError('Current Version does not support client sampling')
         self.T = T
         self.clients = [clients.Client(dataset, modelclass(), lossf, stepsize=client_stepsize, batchsize=client_batchsize, epochs=client_epochs, lambda_=lambda_) for dataset in client_datasets]
         self.client_weights = [client.get_weight() for client in self.clients]
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
         self.model = modelclass()
-        self.mu = mu
-        self.Y_0, self.Y_1 = None, None
+        self.client_epochs = client_epochs
+        self.gammatau = gammatau
 
-        self.NY = NY
         wandb.init(
             # set the wandb project where this run will be logged
             project="fairFL",
@@ -60,11 +73,10 @@ class Server:
                 "client_epochs": client_epochs,
                 "client_stepsize": client_stepsize,
                 "client_batchsize": client_batchsize,
-                "mu": mu,
-                "NY": NY,
                 "lambda_": lambda_,
                 "dataset": datasetname,
-                "runname": runname
+                "runname": runname,
+                "algorithm": "agnostic"
             }, dir='/'
         )
 
@@ -79,9 +91,9 @@ class Server:
                 global_state_dict[key] += local_model[key] * weights[i]
 
         # Update the global model's state dictionary
-        self.model.load_state_dict(global_state_dict)
+        return global_state_dict
 
-    def client_step(self):
+    def client_step(self, checkpoint_iteration):
         '''
         Performs the client steps for the participating clients in a single communication round.
 
@@ -92,20 +104,8 @@ class Server:
             A list of models, where each model is the result of the local update step performed by a participating client.
 
         '''
-        participating_client_ids = self.sample_clients()
-        return [self.clients[id].client_step(copy_statedict(self.model.state_dict())) for id in participating_client_ids], [self.client_weights[id] for id in participating_client_ids]
-
-    def sample_clients(self):
-        '''
-        Selects a random subset of clients to participate in the current communication round.
-        This method selects `m` clients at random from the list of `client_datasets`. The value of `m` is determined by the `m` attribute of the `Server` object. If `m` is `None`, all clients are selected.
-
-        Returns:
-            A list of participating clients.
-
-        '''
-        round_client_ids = np.random.choice(len(self.client_weights), self.m, p=self.client_weights, replace=False)
-        return round_client_ids
+        client_responses = [client.client_step(copy_statedict(self.model.state_dict()), checkpoint_iteration) for client in self.clients]
+        return [cr[0] for cr in client_responses], [cr[1] for cr in client_responses]
 
     def train(self):
         '''
@@ -113,36 +113,20 @@ class Server:
 
         This method trains the federated learning model using the specified hyperparameters and datasets. The training is performed over a fixed number of communication rounds.
         '''
-        # sync the Pa
-        self.sync_Pa()
-        # init the sets for C
-        self.Y_0, self.Y_1 = yset.YSet(0, self.NY), yset.YSet(1, self.NY)
+        lambdas = self.client_weights
         # perform the communication rounds
         for t in tqdm(range(self.T)):
-            # update the C function (algorithm 2)
-            self.update_C()
-            for client in self.clients:
-                client.set_C(self.Y_0, self.Y_1)
-            # perform client updates (algorithm 3)
-            model_updates, update_weights = self.client_step()
-            self.aggregate_theta(model_updates, update_weights)
+            # perform client updates
+            checkpoint_iteration = np.random.randint(0, self.client_epochs)
+            model_updates, checkpoints = self.client_step(checkpoint_iteration)
+            self.model.load_state_dict(self.aggregate_theta(model_updates, lambdas))
             self.log_progress()
+            # update lambdas
+            checkpointmodel = self.aggregate_theta(checkpoints, lambdas)
+            lambda_updates = np.array([client.get_epochloss(checkpointmodel) for client in self.clients])
+            lambdas = lambdas + self.gammatau * lambda_updates
+            lambdas = projection_simplex_sort(lambdas)
         wandb.finish()
-
-    def update_C(self):
-        # drop samples
-        self.Y_0.drop(self.mu)
-        self.Y_1.drop(self.mu)
-
-        # sample new points
-        updates0 = []
-        updates1 = []
-        for client, weight in zip(self.clients, self.client_weights):
-            p0, p1 = client.sample_C_update([int(weight * self.mu * self.NY)] * 2, copy_statedict(self.model.state_dict()))
-            updates0.append(p0)
-            updates1.append(p1)
-        self.Y_0.update(updates0)
-        self.Y_1.update(updates1)
 
     def test_current_model(self):
         '''
@@ -164,12 +148,6 @@ class Server:
             client.split_train_test(test_size=fraction)
         self.client_weights = [client.get_weight() for client in self.clients]
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
-
-    def sync_Pa(self):
-        Pk0s = [client.get_Pka(a=0) for client in self.clients]
-        Pa0 = (np.array(Pk0s) * self.client_weights).sum()
-        for client in self.clients:
-            client.set_alphaka(Pa0)
 
     def log_progress(self):
         res, weights = self.test_current_model()

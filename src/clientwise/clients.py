@@ -10,6 +10,18 @@ import torch
 from torch.utils.data import TensorDataset, DataLoader
 
 
+def distance_kernel(a, b):
+    return ((torch.abs(a - 1) + torch.abs(b - 1) - torch.abs(a - b)) + (torch.abs(a) + torch.abs(b) - torch.abs(a - b))) / 4
+
+
+def MMD(a, b):
+    return (
+        distance_kernel(a, a.T).mean()
+        + distance_kernel(b, b.T).mean()
+        - 2 * distance_kernel(a, b.T).mean()
+    )
+
+
 # Client Class
 class Client:
     def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=None, epochs=10, lambda_=1):
@@ -29,36 +41,32 @@ class Client:
         self.lambda_ = lambda_
         self.current_C = lambda p: 0
 
-    def client_step(self, current_theta, checkpoint_iteration):
+    def client_step(self, current_theta):
         if self.batchsize is not None:
             generator = DataLoader(TensorDataset(self.X, self.Y, self.A), batch_size=self.batchsize, shuffle=True, num_workers=0)
         self.model.load_state_dict(current_theta)
         optimizer = torch.optim.SGD(self.model.parameters(), lr=self.stepsize)
         for e in range(self.epochs):
-            if e == checkpoint_iteration:
-                checkpoint = {}
-                for key in self.model.state_dict().keys():
-                    checkpoint[key] = torch.zeros_like(self.model.state_dict()[key])
-                    checkpoint[key] += self.model[key]
-
             if self.batchsize is not None:
                 for x, y, a in generator:
                     optimizer.zero_grad()
                     prediction = self.model(x)
                     accloss = self.lossf(prediction.flatten(), y)
-                    loss = accloss
+                    fairloss = MMD(prediction[a == 0], prediction[a == 1])
+                    loss = accloss + 2 * self.lambda_ * fairloss
                     loss.backward()
                     optimizer.step()
             else:
                 optimizer.zero_grad()
                 prediction = self.model(self.X)
                 accloss = self.lossf(prediction.flatten(), self.Y)
-                loss = accloss
+                fairloss = MMD(prediction[a == 0], prediction[a == 1])
+                loss = accloss + 2 * self.lambda_ * fairloss
                 loss.backward()
                 optimizer.step()
         # decrease learning rate
         self.stepsize = 0.99 * self.stepsize
-        return self.model.state_dict(), checkpoint
+        return self.model.state_dict()
 
     def set_N(self, N):
         self.N = N
@@ -73,13 +81,3 @@ class Client:
 
     def split_train_test(self, **kwargs):
         self.X, self.X_test, self.Y, self.Y_test, self.A, self.A_test = train_test_split(self.X, self.Y, self.A, **kwargs)
-
-    def get_epochloss(self, theta):
-        self.model.load_state_dict(theta)
-        if self.batchsize is not None:
-            generator = DataLoader(TensorDataset(self.X, self.Y, self.A), batch_size=self.batchsize, shuffle=True, num_workers=0)
-            x, y, a = next(generator)
-        else:
-            x, y, a = self.X, self.Y, self.A
-        prediction = self.model(x)
-        return self.lossf(prediction.flatten(), y)

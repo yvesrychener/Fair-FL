@@ -10,8 +10,9 @@ import torch
 from tqdm import tqdm
 import wandb
 
-import clients
-from .. import metrics
+from . import clients
+from . import yset
+from . import metrics
 
 
 def copy_statedict(statedict):
@@ -24,7 +25,7 @@ def copy_statedict(statedict):
 
 # Server Class
 class Server:
-    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname=''):
+    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, mu=1.0, NY=100, lambda_=1, datasetname='None', runname=''):
         '''
         Initializes the Server object for federated learning experiment.
 
@@ -44,7 +45,10 @@ class Server:
         self.client_weights = [client.get_weight() for client in self.clients]
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
         self.model = modelclass()
+        self.mu = mu
+        self.Y_0, self.Y_1 = None, None
 
+        self.NY = NY
         wandb.init(
             # set the wandb project where this run will be logged
             project="fairFL",
@@ -56,10 +60,11 @@ class Server:
                 "client_epochs": client_epochs,
                 "client_stepsize": client_stepsize,
                 "client_batchsize": client_batchsize,
+                "mu": mu,
+                "NY": NY,
                 "lambda_": lambda_,
                 "dataset": datasetname,
-                "runname": runname,
-                "algorithm": "client-wise"
+                "runname": runname
             }, dir='/'
         )
 
@@ -108,13 +113,36 @@ class Server:
 
         This method trains the federated learning model using the specified hyperparameters and datasets. The training is performed over a fixed number of communication rounds.
         '''
+        # sync the Pa
+        self.sync_Pa()
+        # init the sets for C
+        self.Y_0, self.Y_1 = yset.YSet(0, self.NY), yset.YSet(1, self.NY)
         # perform the communication rounds
         for t in tqdm(range(self.T)):
+            # update the C function (algorithm 2)
+            self.update_C()
+            for client in self.clients:
+                client.set_C(self.Y_0, self.Y_1)
             # perform client updates (algorithm 3)
             model_updates, update_weights = self.client_step()
             self.aggregate_theta(model_updates, update_weights)
             self.log_progress()
         wandb.finish()
+
+    def update_C(self):
+        # drop samples
+        self.Y_0.drop(self.mu)
+        self.Y_1.drop(self.mu)
+
+        # sample new points
+        updates0 = []
+        updates1 = []
+        for client, weight in zip(self.clients, self.client_weights):
+            p0, p1 = client.sample_C_update([int(weight * self.mu * self.NY)] * 2, copy_statedict(self.model.state_dict()))
+            updates0.append(p0)
+            updates1.append(p1)
+        self.Y_0.update(updates0)
+        self.Y_1.update(updates1)
 
     def test_current_model(self):
         '''
@@ -136,6 +164,12 @@ class Server:
             client.split_train_test(test_size=fraction)
         self.client_weights = [client.get_weight() for client in self.clients]
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
+
+    def sync_Pa(self):
+        Pk0s = [client.get_Pka(a=0) for client in self.clients]
+        Pa0 = (np.array(Pk0s) * self.client_weights).sum()
+        for client in self.clients:
+            client.set_alphaka(Pa0)
 
     def log_progress(self):
         res, weights = self.test_current_model()
