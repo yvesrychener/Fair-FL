@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy
 
@@ -8,6 +9,7 @@ from src.ours import server as our_server
 
 from src.utils import metrics
 import numpy as np
+import argparse
 
 
 def buildModelClass(inputSize):
@@ -25,31 +27,39 @@ def buildModelClass(inputSize):
 
 
 if __name__ == '__main__':
-    method = 'ours'# agnostic, clientwise, ours
-    NREPE = 10
-    T = 100
-    NLAMBDAS = 50
-    ls = np.logspace(-5, 2, NLAMBDAS)
-    for mu in [0.1, 0.5, 1.0]:
-        for NY in [10, 100, 1000]:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--method', choices=['agnostic', 'clientwise', 'ours'])     # method name
+    parser.add_argument('--home')                                                   # home folder location
+    parser.add_argument('--numSeeds', default=10, type=int)                         # number of different seeds
+    parser.add_argument('--numComRnds', default=100, type=int)                      # number of communcation rounds
+    parser.add_argument('--numLambdas', default=50, type=int)                       # number of lambdas to check
+    parser.add_argument('--runName', default='run')                                 # run name for weights and biases
+
+    args = parser.parse_args()
+    HOMEFOLDER = args.home
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    method = args.method  # agnostic, clientwise, ours
+    ls = np.logspace(-5, 2, args.numLambdas)
+    for mu in [1.0]:
+        for NY in [100, 1000]:
             for l in ls:
-                for seed in range(NREPE):
+                for seed in range(args.numSeeds):
                     torch.manual_seed(seed)
                     np.random.seed(seed)
-                    if method=='agnostic':
-                        s = agnostic_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=T, lambda_=l, datasetname='CommunitiesCrime', runname='25Sept2023')
-                    elif method=='clientwise':
-                        s = agnostic_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=T, lambda_=l, datasetname='CommunitiesCrime', runname='25Sept2023')
-                    elif method=='ours':
-                        s = our_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=T, mu=mu, NY=NY, lambda_=l, datasetname='CommunitiesCrime', runname='25Sept2023')
+                    if method == 'agnostic':
+                        s = agnostic_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
+                    elif method == 'clientwise':
+                        s = clientwise_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
+                    elif method == 'ours':
+                        s = our_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, mu=mu, NY=NY, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
                     else:
                         raise NotImplementedError(f'Method {method} currently not supported')
                     s.train_test_split()
                     s.sync_N()
-                    if method=='ours':
+                    if method == 'ours':
                         s.sync_Pa()
                     s.train()
                     res, weights = s.test_current_model()
-                    performances = np.vstack([np.array([metrics.accuracy(p, y), metrics.P1(p, a)]) for p, y, a in res])
-                    np.save(f'results/{method}/cc_p_{l}_{seed}.npy', performances)
-                    np.save(f'results/{method}/cc_w_{l}_{seed}.npy', weights)
+                    performances = np.vstack([np.array([metrics.accuracy(p, y).cpu(), metrics.P1(p, a).cpu()]) for p, y, a in res])
+                    np.save(os.path.join(HOMEFOLDER, f'results/{method}/cc_p_{l}_{seed}_{NY}.npy'), performances)

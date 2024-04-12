@@ -17,8 +17,8 @@ def distance_kernel(a, b):
 
 # Client Class
 class Client:
-    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=100, epochs=10, lambda_=1):
-        self.X, self.Y, self.A = torch.Tensor(dataset[0].to_numpy()), torch.Tensor(dataset[1].to_numpy()), torch.Tensor(dataset[2].to_numpy())
+    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=100, epochs=10, lambda_=1, device='cpu'):
+        self.X, self.Y, self.A = torch.Tensor(dataset[0].to_numpy(), device=device), torch.Tensor(dataset[1].to_numpy(), device=device), torch.Tensor(dataset[2].to_numpy(), device=device)
         self.stepsize = stepsize
         self.batchsize = batchsize
         self.epochs = epochs
@@ -34,6 +34,7 @@ class Client:
         self.lambda_ = lambda_
         self.K = lambda a, b: distance_kernel(a, b)
         self.current_C = lambda p: 0
+        self.device = device
 
     def client_step(self, current_theta):
         if self.batchsize is not None:
@@ -90,7 +91,7 @@ class Client:
         self.X, self.X_test, self.Y, self.Y_test, self.A, self.A_test = train_test_split(self.X, self.Y, self.A, **kwargs)
 
     def get_Pka(self, a=0):
-        return (self.A == a).to(float).mean()
+        return (self.A == a).to(float).mean().cpu()
 
     def set_alphaka(self, Pa0):
         self.alphak0 = self.get_Pka(a=0) / Pa0

@@ -14,17 +14,17 @@ from . import clients
 from . import metrics
 
 
-def copy_statedict(statedict):
+def copy_statedict(statedict, device='cpu'):
     statedict_copy = {}
     for key in statedict.keys():
-        statedict_copy[key] = torch.zeros_like(statedict[key])
+        statedict_copy[key] = torch.zeros_like(statedict[key], device=device)
         statedict_copy[key] += statedict[key]
     return statedict_copy
 
 
 # Server Class
 class Server:
-    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname=''):
+    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', device='cpu'):
         '''
         Initializes the Server object for federated learning experiment.
 
@@ -40,10 +40,11 @@ class Server:
         '''
         self.m = len(client_datasets) if m is None else m
         self.T = T
-        self.clients = [clients.Client(dataset, modelclass(), lossf, stepsize=client_stepsize, batchsize=client_batchsize, epochs=client_epochs, lambda_=lambda_) for dataset in client_datasets]
+        self.clients = [clients.Client(dataset, modelclass().to(device), lossf, stepsize=client_stepsize, batchsize=client_batchsize, epochs=client_epochs, lambda_=lambda_, device=device) for dataset in client_datasets]
         self.client_weights = [client.get_weight() for client in self.clients]
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
-        self.model = modelclass()
+        self.model = modelclass().to(device)
+        self.device = device
 
         wandb.init(
             # set the wandb project where this run will be logged
@@ -60,13 +61,13 @@ class Server:
                 "dataset": datasetname,
                 "runname": runname,
                 "algorithm": "client-wise"
-            }, dir='/'
+            }
         )
 
     def aggregate_theta(self, thetas, weights):
         global_state_dict = {}
         for key in self.model.state_dict().keys():
-            global_state_dict[key] = torch.zeros_like(self.model.state_dict()[key])
+            global_state_dict[key] = torch.zeros_like(self.model.state_dict()[key], device=self.device)
 
         # Compute the weighted average of local models' state dictionaries
         for i, local_model in enumerate(thetas):
@@ -88,7 +89,7 @@ class Server:
 
         '''
         participating_client_ids = self.sample_clients()
-        return [self.clients[id].client_step(copy_statedict(self.model.state_dict())) for id in participating_client_ids], [self.client_weights[id] for id in participating_client_ids]
+        return [self.clients[id].client_step(copy_statedict(self.model.state_dict(), device=self.device)) for id in participating_client_ids], [self.client_weights[id] for id in participating_client_ids]
 
     def sample_clients(self):
         '''
@@ -120,7 +121,7 @@ class Server:
         '''
         PLACEHOLDER
         '''
-        client_predictions = [client.test_client(copy_statedict(self.model.state_dict())) for client in self.clients]
+        client_predictions = [client.test_client(copy_statedict(self.model.state_dict(), device=self.device)) for client in self.clients]
         return client_predictions, self.client_weights
 
     def train_test_split(self, fraction=0.25):
@@ -147,7 +148,7 @@ class Server:
             torch.cat([r[0] for r in res]).flatten(),
             torch.cat([r[2] for r in res]).flatten()
         )
-        wandb.log({"acc": acc, "fairness": fairness})
+        wandb.log({"acc": acc.cpu(), "fairness": fairness.cpu()})
 
     def sync_N(self):
         N = sum((client.get_weight() for client in self.clients))
