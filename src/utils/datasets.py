@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
+import os
 
 
 class DrugDataset:
@@ -16,9 +17,9 @@ class DrugDataset:
             'LSD', 'Meth', 'Mushrooms', 'Nicotine', 'Semeron', 'VSA'
         ]
 
-    def load_data(self):
+    def load_data(self, HOMEFOLDER='/'):
         """Load and preprocess the Drug Dataset."""
-        drug = pd.read_csv('datasets/drug_consumption.data', header=None)
+        drug = pd.read_csv(os.path.join(HOMEFOLDER,'datasets/drug_consumption.data'), header=None)
         drug.columns = self.column_names
         drug['A'] = (drug['Ethnicity'] == -0.31685) * 1.0
         datasets = []
@@ -34,6 +35,42 @@ class DrugDataset:
             Ys.append(Y.mean())
         return datasets
 
+class CompasDataset:
+    """
+    A class to load and preprocess the Compas Dataset.
+    https://www.kaggle.com/danofer/compass
+    """
+    def __init__(self):
+        pass
+
+    def load_data(self, HOMEFOLDER='/'):
+        # features to use
+        continuous_features = ['age', 'priors_count']
+        categorical_features = ['race', 'c_charge_degree', 'sex']
+        label = 'two_year_recid'
+        sensitive_attribute = 'race'
+        client_attribute = 'age_cat'
+        # load data
+        df = pd.read_csv(os.path.join(HOMEFOLDER,'datasets/compas-scores-two-years.csv'))
+        # data filtering
+        df = df.dropna(subset=["days_b_screening_arrest"])
+        df = df[(df['days_b_screening_arrest']<=30) & (df['days_b_screening_arrest']>=-30)]
+        df = df[df['is_recid']!=-1]
+        df = df[df['c_charge_degree']!='O']
+        df = df[df['score_text']!='NA']
+        df = df[(df['race']=='African-American') | (df['race']=='Caucasian')]
+        df = df.reset_index()
+        # one-hot encoding
+        encoder = OneHotEncoder(handle_unknown='ignore').fit(df[categorical_features])
+        # dataset generation
+        datasets = []
+        for client in df[client_attribute].unique():
+            client_df = df[df[client_attribute]==client]
+            X = pd.DataFrame(np.hstack((encoder.transform(client_df[categorical_features]).todense(), client_df[continuous_features])))
+            Y = client_df[label]
+            A = (client_df[sensitive_attribute]=='African-American')*1.0
+            datasets.append((X,Y,A))
+        return datasets
 
 class LoanDataset:
     """
@@ -100,16 +137,16 @@ class CommunitiesCrimeDataset:
     def __init__(self):
         pass
 
-    def load_data(self):
+    def load_data(self, HOMEFOLDER='/'):
         """Load and preprocess the Communities and Crime Dataset."""
         yvar = 'ViolentCrimesPerPop'
         avar = 'racepctblack'
-        with open('datasets/communities.names') as file:
+        with open(os.path.join(HOMEFOLDER,'datasets/communities.names')) as file:
             info = file.read()
 
         colnames = [line.split(' ')[1] for line in info.split('\n') if line and line.startswith('@attribute')]
 
-        cc = pd.read_csv('datasets/communities.data',
+        cc = pd.read_csv(os.path.join(HOMEFOLDER,'datasets/communities.data'),
                          header=None,
                          names=colnames,
                          na_values='?')
@@ -134,19 +171,20 @@ class CommunitiesCrimeDataset:
 
 
 class SyntheticDataset:
-    def __init__(self, kappa, npoints, nfeatures):
+    def __init__(self, K, npoints, nfeatures):
         """
         Constructor for the SyntheticDataset class.
 
         Args:
-        kappa (int): The number of clients.
+        K (int): The number of clients.
         npoints (int or list of ints): Number of datapoints for each client.
                                         If a single integer is provided, all clients will have the same number of datapoints.
                                         If a list of integers is provided, npoints[i] corresponds to the number of datapoints for client i.
         nfeatures (int): The number of features for the dataset.
+        additive (bool): Whether the bias is additive (offset) or multiplicative (slope)
         """
-        self.kappa = kappa
-        self.npoints = npoints if isinstance(npoints, list) else [npoints] * kappa
+        self.K = K
+        self.npoints = npoints if isinstance(npoints, list) else [npoints] * K
         self.nfeatures = nfeatures
 
     def generate_data(self):
@@ -157,19 +195,114 @@ class SyntheticDataset:
         datasets (list of tuples): A list of (X, Y, A) pairs for each client, where X, Y, and A are the stacked datapoints
                                     for each client with shapes (npoints, nfeatures), (npoints), and (npoints), respectively.
         """
-        centers = np.random.multivariate_normal(np.zeros(self.nfeatures), np.identity(self.nfeatures), self.kappa)
-        m = np.random.randn(self.nfeatures)
+        center = np.ones(self.nfeatures)
+        m = np.ones(self.nfeatures)
 
         datasets = []
-        for i in range(self.kappa):
-            center = centers[i]
-            X = np.random.multivariate_normal(center, np.identity(self.nfeatures), self.npoints[i])
-            A = np.random.randint(0, 2, self.npoints[i])
-            Y = (np.dot(X, m) >= 0).astype(int)
-            datasets.append((X, Y, A))
-
+        for i in range(self.K):
+            X0 = np.random.multivariate_normal((2*np.mod(i,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X1 = np.random.multivariate_normal((2*np.mod(i+1,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X = np.vstack((X0,X1))
+            A = np.concatenate((np.ones(int(self.npoints[i]/2)), np.zeros(int(self.npoints[i]/2))))
+            Y = (np.dot(X, m)>= 0).astype(int)
+            datasets.append((pd.DataFrame(np.hstack((X,np.expand_dims(A,1)))), pd.Series(Y), pd.Series(A)))
         return datasets
 
+class HeterogenityDataset:
+    def __init__(self, K, npoints, nfeatures, heterogenity):
+        """
+        Constructor for the SyntheticDataset class.
+
+        Args:
+        K (int): The number of clients.
+        npoints (int or list of ints): Number of datapoints for each client.
+                                        If a single integer is provided, all clients will have the same number of datapoints.
+                                        If a list of integers is provided, npoints[i] corresponds to the number of datapoints for client i.
+        nfeatures (int): The number of features for the dataset.
+        heterogenity (float): Mixture weight for heterogenity: 0.5 (full homogeneous) to 1.0 (full heterogenious)
+
+        """
+        self.K = K
+        self.npoints = npoints if isinstance(npoints, list) else [npoints] * K
+        self.nfeatures = nfeatures
+        self.heterogenity = heterogenity
+
+    def generate_data(self):
+        """
+        Generate synthetic data for the dataset based on the given parameters.
+
+        Returns:
+        datasets (list of tuples): A list of (X, Y, A) pairs for each client, where X, Y, and A are the stacked datapoints
+                                    for each client with shapes (npoints, nfeatures), (npoints), and (npoints), respectively.
+        """
+        center = np.ones(self.nfeatures)
+        m = np.ones(self.nfeatures)
+
+        datasets = []
+        for i in range(self.K):
+            X0_alpha1 = np.random.multivariate_normal((2*np.mod(i,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X0_alpha0 = np.random.multivariate_normal((2*np.mod(i+1,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            alpha_X0 = np.random.binomial(1, self.heterogenity, (int(self.npoints[i]/2),1))
+            X0 = alpha_X0 * X0_alpha1 + (1 - alpha_X0) * X0_alpha0
+
+            X1_alpha1 = np.random.multivariate_normal((2*np.mod(i+1,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X1_alpha0 = np.random.multivariate_normal((2*np.mod(i,2)-1)*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            alpha_X1 = np.random.binomial(1, self.heterogenity, (int(self.npoints[i]/2),1))
+            X1 = alpha_X1 * X1_alpha1 + (1 - alpha_X1) * X1_alpha0
+
+            X = np.vstack((X0,X1))
+            A = np.concatenate((np.ones(int(self.npoints[i]/2)), np.zeros(int(self.npoints[i]/2))))
+            Y = (np.dot(X, m)>= 0).astype(int)
+            datasets.append((pd.DataFrame(np.hstack((X,np.expand_dims(A,1)))), pd.Series(Y), pd.Series(A)))
+        return datasets
+
+
+class HeterogenityDatasetv2:
+    def __init__(self, heterogenity):
+        """
+        Constructor for the SyntheticDataset class.
+
+        Args:
+        heterogenity (float): Mixture weight for heterogenity: 0.5 (full homogeneous) to 1.0 (full heterogenious)
+
+        """
+        self.npoints = [500, 500, 200, 200, 200, 200, 200]
+        self.nfeatures = 10
+        self.K = 7
+        self.heterogenity = heterogenity
+
+    def generate_data(self):
+        """
+        Generate synthetic data for the dataset based on the given parameters.
+
+        Returns:
+        datasets (list of tuples): A list of (X, Y, A) pairs for each client, where X, Y, and A are the stacked datapoints
+                                    for each client with shapes (npoints, nfeatures), (npoints), and (npoints), respectively.
+        """
+        center = np.ones(self.nfeatures)
+        m = np.ones(self.nfeatures)
+
+        datasets = []
+        for i in range(6):
+            c0 = -1 if i<=1 else 1
+            c1 = -1*c0
+
+            X0_alpha1 = np.random.multivariate_normal(c0*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X0_alpha0 = np.random.multivariate_normal(c1*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            alpha_X0 = np.random.binomial(1, self.heterogenity, (int(self.npoints[i]/2),1))
+            X0 = alpha_X0 * X0_alpha1 + (1 - alpha_X0) * X0_alpha0
+
+            X1_alpha1 = np.random.multivariate_normal(c1*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            X1_alpha0 = np.random.multivariate_normal(c0*center, np.identity(self.nfeatures), int(self.npoints[i]/2))
+            alpha_X1 = np.random.binomial(1, self.heterogenity, (int(self.npoints[i]/2),1))
+            X1 = alpha_X1 * X1_alpha1 + (1 - alpha_X1) * X1_alpha0
+
+            X = np.vstack((X0,X1))
+            A = np.concatenate((np.ones(int(self.npoints[i]/2)), np.zeros(int(self.npoints[i]/2))))
+            Y = (np.dot(X, m)>= 0).astype(int)
+            datasets.append((pd.DataFrame(np.hstack((X,np.expand_dims(A,1)))), pd.Series(Y), pd.Series(A)))
+            #datasets.append((pd.DataFrame(X), pd.Series(Y), pd.Series(A)))
+        return datasets
 
 if __name__ == "__main__":
     drug_dataset = DrugDataset()

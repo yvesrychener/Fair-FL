@@ -10,9 +10,9 @@ import numpy as np
 
 
 class YSet:
-    def __init__(self, A, NY):
+    def __init__(self, A, NY, device='cpu'):
         self.A = A
-        self.yset = torch.zeros(NY)
+        self.yset = torch.zeros(NY, device=device)
 
     def drop(self, mu):
         keep_idxs = np.random.choice(len(self.yset), int((1 - mu) * len(self.yset)), replace=False)

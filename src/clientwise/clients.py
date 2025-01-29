@@ -24,8 +24,8 @@ def MMD(a, b):
 
 # Client Class
 class Client:
-    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=None, epochs=10, lambda_=1):
-        self.X, self.Y, self.A = torch.Tensor(dataset[0].to_numpy()), torch.Tensor(dataset[1].to_numpy()), torch.Tensor(dataset[2].to_numpy())
+    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=None, epochs=10, lambda_=1, device='cpu'):
+        self.X, self.Y, self.A = torch.tensor(dataset[0].to_numpy(), device=device).float(), torch.tensor(dataset[1].to_numpy(), device=device).float(), torch.tensor(dataset[2].to_numpy(), device=device).float()
         self.stepsize = stepsize
         self.batchsize = batchsize
         self.epochs = epochs
@@ -40,6 +40,7 @@ class Client:
         self.lossf = lossf
         self.lambda_ = lambda_
         self.current_C = lambda p: 0
+        self.device = device
 
     def client_step(self, current_theta):
         if self.batchsize is not None:

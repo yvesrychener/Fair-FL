@@ -7,17 +7,25 @@
 # imports
 from sklearn.model_selection import train_test_split
 import torch
-import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
+from . import metrics
 
 
 def distance_kernel(a, b):
     return ((torch.abs(a - 1) + torch.abs(b - 1) - torch.abs(a - b)) + (torch.abs(a) + torch.abs(b) - torch.abs(a - b))) / 4
 
 
+def MMD(a, b):
+    return (
+        distance_kernel(a, a.T).mean()
+        + distance_kernel(b, b.T).mean()
+        - 2 * distance_kernel(a, b.T).mean()
+    )
+
+
 # Client Class
 class Client:
-    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=100, epochs=10, lambda_=1, device='cpu'):
+    def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=None, epochs=10, lambda_=1, device='cpu'):
         self.X, self.Y, self.A = torch.tensor(dataset[0].to_numpy(), device=device).float(), torch.tensor(dataset[1].to_numpy(), device=device).float(), torch.tensor(dataset[2].to_numpy(), device=device).float()
         self.stepsize = stepsize
         self.batchsize = batchsize
@@ -32,7 +40,6 @@ class Client:
         self.model = model
         self.lossf = lossf
         self.lambda_ = lambda_
-        self.K = lambda a, b: distance_kernel(a, b)
         self.current_C = lambda p: 0
         self.device = device
 
@@ -47,7 +54,7 @@ class Client:
                     optimizer.zero_grad()
                     prediction = self.model(x)
                     accloss = self.lossf(prediction.flatten(), y)
-                    fairloss = self.current_C(prediction[a == 0], A=0) - self.current_C(prediction[a == 1], A=1)
+                    fairloss = MMD(prediction[a == 0], prediction[a == 1])
                     loss = accloss + 2 * self.lambda_ * fairloss
                     loss.backward()
                     optimizer.step()
@@ -55,26 +62,13 @@ class Client:
                 optimizer.zero_grad()
                 prediction = self.model(self.X)
                 accloss = self.lossf(prediction.flatten(), self.Y)
-                fairloss = self.current_C(prediction[self.A == 0], A=0) - self.current_C(prediction[self.A == 1], A=1)
+                fairloss = MMD(prediction[a == 0], prediction[a == 1])
                 loss = accloss + 2 * self.lambda_ * fairloss
                 loss.backward()
                 optimizer.step()
         # decrease learning rate
         self.stepsize = 0.99 * self.stepsize
         return self.model.state_dict()
-
-    def sample_C_update(self, num_points, current_theta):
-        with torch.no_grad():
-            self.model.load_state_dict(current_theta)
-            point_idxs_A1 = np.random.choice(int(self.A.sum()), size=int(self.alphak1 * num_points[1]), replace=False)
-            point_idxs_A0 = np.random.choice(int((1 - self.A).sum()), size=int(self.alphak0 * num_points[0]), replace=False)
-            p1 = self.model(self.X[self.A == 1][point_idxs_A1])
-            p0 = self.model(self.X[self.A == 0][point_idxs_A0])
-            return p0, p1
-
-    def set_Y_sets(self, Y0, Y1):
-        self.Y0 = Y0
-        self.Y1 = Y1
 
     def set_N(self, N):
         self.N = N
@@ -90,22 +84,16 @@ class Client:
     def split_train_test(self, **kwargs):
         self.X, self.X_test, self.Y, self.Y_test, self.A, self.A_test = train_test_split(self.X, self.Y, self.A, **kwargs)
 
-    def get_Pka(self, a=0):
-        return (self.A == a).to(float).mean().cpu()
+    def get_fm(self, PA1, current_theta):
+        with torch.no_grad():
+            self.model.load_state_dict(current_theta)
+            prediction = self.model(self.X)
+            F_k = metrics.P1(prediction, self.A, abs=False)
+            y_hat = torch.sigmoid(prediction).round()
+            m_k = (y_hat.flatten() * (1 - self.A.flatten())).mean() / (1-PA1) - (y_hat.flatten() * self.A.flatten()).mean() / (1-PA1)
+            acc_k = metrics.accuracy(prediction, self.Y)
+        return (F_k, m_k, acc_k)
 
-    def set_alphaka(self, Pa0):
-        self.alphak0 = self.get_Pka(a=0) / Pa0
-        self.alphak1 = self.get_Pka(a=1) / (1 - Pa0)
+    def get_PA1(self):
+        return self.A.mean()
 
-    def set_C(self, Y_0, Y_1):
-        def currentCfunction(p, A=None):
-            if len(p) == 0:
-                return 0
-            else:
-                if A is None:
-                    return self.K(p, Y_0.yset).mean() - self.K(p, Y_1.yset).mean()
-                if A == 1:
-                    return self.K(p, Y_0.yset).mean() - self.K(p, Y_1.yset).mean() * (self.N / (self.N - 1))
-                if A == 0:
-                    return self.K(p, Y_0.yset).mean() * (self.N / (self.N - 1)) - self.K(p, Y_1.yset).mean()
-        self.current_C = currentCfunction
