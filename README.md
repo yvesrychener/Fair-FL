@@ -60,7 +60,7 @@ Refer to individual scripts for details on hyperparameters and configurations.
 For citing our work, you may use:
 
 ```
-@article{global_fair_fl,
+@inproceedings{global_fair_fl,
   title={Global Group Fairness in Federated Learning via Function Tracking},
   author={Yves Rychener, Daniel Kuhn,  Yifan Hu},
   booktitle={International Conference on Artificial Intelligence and Statistics},
