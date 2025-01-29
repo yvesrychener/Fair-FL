@@ -37,7 +37,7 @@ def projection_simplex_sort(v, z=1):
 
 # Server Class
 class Server:
-    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', gammatau=0.01, device='cpu'):
+    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', gammatau=0.01, device='cpu', additional_config={}):
         '''
         Initializes the Server object for federated learning experiment.
 
@@ -62,23 +62,25 @@ class Server:
         self.client_epochs = client_epochs
         self.gammatau = gammatau
         self.device = device
+        config = {
+            "m": m,
+            "T": T,
+            "client_epochs": client_epochs,
+            "client_stepsize": client_stepsize,
+            "client_batchsize": client_batchsize,
+            "lambda_": lambda_,
+            "dataset": datasetname,
+            "runname": runname,
+            "algorithm": "agnostic"
+        }
+        config.update(additional_config)
 
         wandb.init(
             # set the wandb project where this run will be logged
             project="fairFL",
 
             # track hyperparameters and run metadata
-            config={
-                "m": m,
-                "T": T,
-                "client_epochs": client_epochs,
-                "client_stepsize": client_stepsize,
-                "client_batchsize": client_batchsize,
-                "lambda_": lambda_,
-                "dataset": datasetname,
-                "runname": runname,
-                "algorithm": "agnostic"
-            }
+            config=config
         )
 
     def aggregate_theta(self, thetas, weights):
@@ -124,7 +126,7 @@ class Server:
             self.log_progress()
             # update lambdas
             checkpointmodel = self.aggregate_theta(checkpoints, lambdas)
-            lambda_updates = np.array([client.get_epochloss(checkpointmodel) for client in self.clients])
+            lambda_updates = np.array([client.get_epochloss(checkpointmodel).cpu() for client in self.clients])
             lambdas = lambdas + self.gammatau * lambda_updates
             lambdas = projection_simplex_sort(lambdas)
         wandb.finish()

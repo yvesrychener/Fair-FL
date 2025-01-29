@@ -13,7 +13,7 @@ from torch.utils.data import TensorDataset, DataLoader
 # Client Class
 class Client:
     def __init__(self, dataset, model, lossf, stepsize=0.1, batchsize=None, epochs=10, lambda_=1, device='cpu'):
-        self.X, self.Y, self.A = torch.Tensor(dataset[0].to_numpy(), device=device), torch.Tensor(dataset[1].to_numpy(), device=device), torch.Tensor(dataset[2].to_numpy(), device=device)
+        self.X, self.Y, self.A = torch.tensor(dataset[0].to_numpy(), device=device).float(), torch.tensor(dataset[1].to_numpy(), device=device).float(), torch.tensor(dataset[2].to_numpy(), device=device).float()
         self.stepsize = stepsize
         self.batchsize = batchsize
         self.epochs = epochs

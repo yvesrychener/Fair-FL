@@ -24,7 +24,7 @@ def copy_statedict(statedict, device='cpu'):
 
 # Server Class
 class Server:
-    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', device='cpu'):
+    def __init__(self, client_datasets, modelclass, lossf, m=None, T=50, client_stepsize=5e-2, client_batchsize=100, client_epochs=10, lambda_=1, datasetname='None', runname='', device='cpu', additional_config={}):
         '''
         Initializes the Server object for federated learning experiment.
 
@@ -45,23 +45,24 @@ class Server:
         self.client_weights = np.array(self.client_weights) / sum(self.client_weights)
         self.model = modelclass().to(device)
         self.device = device
-
+        config={
+            "m": m,
+            "T": T,
+            "client_epochs": client_epochs,
+            "client_stepsize": client_stepsize,
+            "client_batchsize": client_batchsize,
+            "lambda_": lambda_,
+            "dataset": datasetname,
+            "runname": runname,
+            "algorithm": "client-wise"
+        }
+        config.update(additional_config)
         wandb.init(
             # set the wandb project where this run will be logged
             project="fairFL",
 
             # track hyperparameters and run metadata
-            config={
-                "m": m,
-                "T": T,
-                "client_epochs": client_epochs,
-                "client_stepsize": client_stepsize,
-                "client_batchsize": client_batchsize,
-                "lambda_": lambda_,
-                "dataset": datasetname,
-                "runname": runname,
-                "algorithm": "client-wise"
-            }
+            config = config
         )
 
     def aggregate_theta(self, thetas, weights):

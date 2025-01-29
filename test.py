@@ -38,21 +38,23 @@ if __name__ == '__main__':
     args = parser.parse_args()
     HOMEFOLDER = args.home
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Using Device')
+    print(DEVICE)
 
     method = args.method  # agnostic, clientwise, ours
     ls = np.logspace(-5, 2, args.numLambdas)
     for mu in [1.0]:
-        for NY in [100, 1000]:
+        for NY in [20]:
             for l in ls:
                 for seed in range(args.numSeeds):
                     torch.manual_seed(seed)
                     np.random.seed(seed)
                     if method == 'agnostic':
-                        s = agnostic_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
+                        s = agnostic_server.Server(datasets.CommunitiesCrimeDataset().load_data(HOMEFOLDER=HOMEFOLDER), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
                     elif method == 'clientwise':
-                        s = clientwise_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
+                        s = clientwise_server.Server(datasets.CommunitiesCrimeDataset().load_data(HOMEFOLDER=HOMEFOLDER), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
                     elif method == 'ours':
-                        s = our_server.Server(datasets.CommunitiesCrimeDataset().load_data(), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, mu=mu, NY=NY, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
+                        s = our_server.Server(datasets.CommunitiesCrimeDataset().load_data(HOMEFOLDER=HOMEFOLDER), buildModelClass(99), torch.nn.BCEWithLogitsLoss(), m=None, T=args.numComRnds, mu=mu, NY=NY, lambda_=l, datasetname='CommunitiesCrime', runname=args.runName, device=DEVICE)
                     else:
                         raise NotImplementedError(f'Method {method} currently not supported')
                     s.train_test_split()
